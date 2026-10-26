@@ -6,75 +6,104 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # Configuração da Página
 st.set_page_config(
-    page_title="Brewery RAG Search | Portfólio",
+    page_title="Brewery AI Chat | Portfólio",
     page_icon="🍺",
     layout="wide"
 )
 
-st.title("🍺 Assistente Inteligente de Cervejarias (RAG)")
-st.markdown("Explore mais de 11.000 cervejarias globais usando **Busca Semântica por IA** (Processado no Databricks com Delta Lake e Sentence-Transformers).")
+st.title("🍺 Chat Inteligente de Cervejarias (RAG)")
+st.markdown("Converse com a IA para explorar mais de 11.000 cervejarias globais processadas via Databricks e Delta Lake.")
 
-# Carregar modelo e dados com cache para otimizar a performance
+# 1. Carregar recursos com cache
 @st.cache_resource
 def carregar_recursos():
-    # Carrega o modelo leve de embeddings
     model = SentenceTransformer('all-MiniLM-L6-v2')
-    
-    # Carrega o arquivo Parquet gerado pela Camada Gold
     df = pd.read_parquet("notebooks/data/gold_breweries.parquet")
-    
-    # Converte os embeddings para matriz NumPy
     embeddings = np.array(df['embedding'].tolist())
-    
     return model, df, embeddings
 
-with st.spinner("A carregar modelo de IA e base de dados de cervejarias..."):
-    model, df, matrix_embeddings = carregar_recursos()
+with st.spinner("A carregar modelo de IA e base de dados..."):
+    model, df_base, matrix_embeddings = carregar_recursos()
 
-# Barra de pesquisa interativa
-query = st.text_input(
-    "O que procuras?", 
-    value="Microcervejarias artesanais ou brewpubs localizados na Califórnia",
-    help="Escreve o que quiseres em linguagem natural!"
-)
+# 2. Histórico de mensagens do chat
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Olá! Sou o teu assistente especializado em cervejarias. O que gostarias de encontrar hoje? (Ex: *Microcervejarias na Alemanha*)"}
+    ]
 
-top_k = st.slider("Número de resultados:", min_value=1, max_value=10, value=5)
+# Exibir mensagens anteriores
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-if st.button("🔍 Pesquisar com IA", type="primary"):
-    if not query.strip():
-        st.warning("Por favor, escreve uma pergunta válida.")
-    else:
-        with st.spinner("A calcular similaridade vetorial..."):
-            # Gerar embedding da pergunta do utilizador
+# 3. Input do Chat
+if query := st.chat_input("Escreve a tua pergunta aqui..."):
+    # Adicionar mensagem do utilizador ao histórico
+    st.session_state.messages.append({"role": "user", "content": query})
+    with st.chat_message("user"):
+        st.markdown(query)
+
+    with st.chat_message("assistant"):
+        with st.spinner("A pesquisar e a analisar o contexto..."):
+            
+            # --- FILTRAGEM INTELIGENTE POR PAÍS (Garante Assertividade) ---
+            query_lower = query.lower()
+            df_filtrado = df_base.copy()
+            
+            # Dicionário simples de deteção de países na pergunta
+            paises_map = {
+                "alemanha": "germany",
+                "portugal": "portugal",
+                "estados unidos": "united states",
+                "eua": "united states",
+                "espanha": "spain",
+                "frança": "france",
+                "reino unido": "united kingdom",
+                "brasil": "brazil"
+            }
+            
+            pais_detectado = None
+            for pt_nome, en_nome in paises_map.items():
+                if pt_nome in query_lower:
+                    pais_detectado = en_nome
+                    break
+            
+            # Se a pergunta mencionar um país, filtramos estritamente a base antes da IA
+            if pais_detectado:
+                df_filtrado = df_base[df_base['country'].str.lower() == pais_detectado].reset_index(drop=True)
+                if len(df_filtrado) == 0:
+                    # Fallback caso não ache exato
+                    df_filtrado = df_base.copy()
+            
+            # Se houver dados filtrados, recalculamos os embeddings locais para o subset
+            if len(df_filtrado) < len(df_base):
+                sub_embeddings = np.array(df_filtrado['embedding'].tolist())
+            else:
+                sub_embeddings = matrix_embeddings
+            
+            # Executar busca por similaridade vetorial
             query_vector = model.encode([query])
+            similarities = cosine_similarity(query_vector, sub_embeddings)[0]
             
-            # Calcular similaridade de cosseno
-            similarities = cosine_similarity(query_vector, matrix_embeddings)[0]
-            
-            # Obter os melhores resultados
+            top_k = min(4, len(df_filtrado))
             top_indices = np.argsort(similarities)[::-1][:top_k]
             
-            st.success(idados_encontrados := f"Encontradas as {top_k} cervejarias mais relevantes!")
+            # Construir resposta conversacional da IA
+            resposta_ia = f"Encontrei as seguintes opções mais relevantes para a tua busca:\n\n"
             
-            # Exibir resultados em formato de cartões visuais
             for idx in top_indices:
                 score = similarities[idx]
-                item = df.iloc[idx]
+                item = df_filtrado.iloc[idx]
                 
-                with st.expander(f"⭐ {item['name']} ({item['brewery_type'].title()}) — Relevância: {score:.1%}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**Cidade:** {item['city']}")
-                        st.write(f"**Estado/Província:** {item['state_province']}")
-                        st.write(f"**País:** {item['country']}")
-                    with col2:
-                        if item['website_url']:
-                            st.markdown(f"**Website:** [Aceder ao site]({item['website_url']})")
-                        else:
-                            st.write("**Website:** Não disponível")
-                    
-                    st.info(f"**Contexto analisado pela IA:** {item['context_text']}")
+                site_txt = f"[Aceder ao site]({item['website_url']})" if item['website_url'] else "Não disponível"
+                
+                resposta_ia += f"### 🍻 {item['name']} ({item['brewery_type'].title()})\n"
+                resposta_ia += f"- **Localização:** {item['city']}, {item['state_province']} — **{item['country']}**\n"
+                resposta_ia += f"- **Website:** {site_txt}\n"
+                resposta_ia += f"- *Relevância:* {score:.1%}\n\n"
+            
+            if len(df_filtrado) == 0 or top_k == 0:
+                resposta_ia = "Desculpa, não encontrei nenhuma cervejaria com esses critérios exatos na base de dados."
 
-# Rodapé profissional
-st.markdown("---")
-st.markdown("👨‍💻 Projeto desenvolvido para portfólio de Engenharia de Dados & IA Generativa.")
+            st.markdown(resposta_ia)
+            st.session_state.messages.append({"role": "assistant", "content": resposta_ia})
