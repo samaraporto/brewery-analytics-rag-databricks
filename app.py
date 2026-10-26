@@ -21,7 +21,7 @@ def carregar_recursos():
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
     # Carrega o arquivo Parquet gerado pela Camada Gold
-    df = pd.read_parquet("data/gold_breweries.parquet")
+    df = pd.read_parquet("notebooks/data/gold_breweries.parquet")
     
     # Converte os embeddings para matriz NumPy
     embeddings = np.array(df['embedding'].tolist())
